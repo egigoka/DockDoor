@@ -2,6 +2,12 @@ name: Rebuild patched release
 
 on:
   workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: "Rebuild and replace existing patched release asset"
+        required: false
+        default: false
+        type: boolean
   schedule:
     - cron: "17 5 * * *"
 
@@ -33,14 +39,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          force_rebuild="${{ github.event_name == 'workflow_dispatch' && inputs.force_rebuild }}"
           if gh release view "${{ steps.latest.outputs.release_tag }}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
+            if [ "$force_rebuild" = "true" ]; then
+              echo "should_build=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "should_build=false" >> "$GITHUB_OUTPUT"
+            fi
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Checkout upstream tag
-        if: steps.existing.outputs.exists == 'false'
+        if: steps.existing.outputs.should_build == 'true'
         run: |
           cp .github/patches/no-mouse-moving.patch "$RUNNER_TEMP/no-mouse-moving.patch"
           git remote add upstream https://github.com/ejbills/DockDoor.git
@@ -49,7 +62,7 @@ jobs:
           git apply "$RUNNER_TEMP/no-mouse-moving.patch"
 
       - name: Build app
-        if: steps.existing.outputs.exists == 'false'
+        if: steps.existing.outputs.should_build == 'true'
         run: |
           xcodebuild \
             -project DockDoor.xcodeproj \
@@ -59,8 +72,14 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
+      - name: Ad-hoc sign app
+        if: steps.existing.outputs.should_build == 'true'
+        run: |
+          codesign --force --deep --sign - DerivedData/Build/Products/Release/DockDoor.app
+          codesign --verify --deep --strict --verbose=2 DerivedData/Build/Products/Release/DockDoor.app
+
       - name: Package DMG
-        if: steps.existing.outputs.exists == 'false'
+        if: steps.existing.outputs.should_build == 'true'
         run: |
           mkdir -p dist
           hdiutil create \
@@ -72,20 +91,32 @@ jobs:
           shasum -a 256 dist/DockDoor-patched.dmg | tee dist/sha256.txt
 
       - name: Publish patched release
-        if: steps.existing.outputs.exists == 'false'
+        if: steps.existing.outputs.should_build == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          notes="Patched DockDoor ${{ steps.latest.outputs.tag }}. Mouse cursor warp/nudge code removed. Built unsigned from upstream release source."
-          gh release create "${{ steps.latest.outputs.release_tag }}" \
-            dist/DockDoor-patched.dmg \
-            dist/sha256.txt \
-            --repo "${{ github.repository }}" \
-            --title "DockDoor ${{ steps.latest.outputs.tag }} patched" \
-            --notes "$notes"
+          notes="Patched DockDoor ${{ steps.latest.outputs.tag }}. Mouse cursor warp/nudge code removed. Built on GitHub Actions with ad-hoc signing."
+          if [ "${{ steps.existing.outputs.exists }}" = "true" ]; then
+            gh release upload "${{ steps.latest.outputs.release_tag }}" \
+              dist/DockDoor-patched.dmg \
+              dist/sha256.txt \
+              --repo "${{ github.repository }}" \
+              --clobber
+            gh release edit "${{ steps.latest.outputs.release_tag }}" \
+              --repo "${{ github.repository }}" \
+              --title "DockDoor ${{ steps.latest.outputs.tag }} patched" \
+              --notes "$notes"
+          else
+            gh release create "${{ steps.latest.outputs.release_tag }}" \
+              dist/DockDoor-patched.dmg \
+              dist/sha256.txt \
+              --repo "${{ github.repository }}" \
+              --title "DockDoor ${{ steps.latest.outputs.tag }} patched" \
+              --notes "$notes"
+          fi
 
       - name: Update Homebrew tap
-        if: steps.existing.outputs.exists == 'false' && env.TAP_REPO_TOKEN != ''
+        if: steps.existing.outputs.should_build == 'true' && env.TAP_REPO_TOKEN != ''
         env:
           GH_TOKEN: ${{ env.TAP_REPO_TOKEN }}
         run: |
@@ -94,6 +125,9 @@ jobs:
           git clone "https://x-access-token:${GH_TOKEN}@github.com/egigoka/homebrew-casks-patched.git" "$tmp/tap"
           cd "$tmp/tap"
           TAG="${{ steps.latest.outputs.release_tag }}" SHA="$sha" ruby -e 'path="Casks/dockdoor-patched.rb"; tag=ENV.fetch("TAG"); sha=ENV.fetch("SHA"); s=File.read(path); s=s.gsub(/version ".*"/, "version \"#{tag}\""); s=s.gsub(/sha256 ".*"/, "sha256 \"#{sha}\""); File.write(path, s)'
+          if git diff --quiet -- Casks/dockdoor-patched.rb; then
+            exit 0
+          fi
           git add Casks/dockdoor-patched.rb
           git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -m "Update DockDoor patched to ${{ steps.latest.outputs.release_tag }}"
           git push
