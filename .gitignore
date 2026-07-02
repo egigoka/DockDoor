@@ -89,6 +89,8 @@ fastlane/test_output
 
 iOSInjectionProject/
 
+dist/
+
 # Custom Gitignore
 .DS_Store
 /xcuserdata

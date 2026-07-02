@@ -1,0 +1,99 @@
+name: Rebuild patched release
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 5 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  rebuild:
+    runs-on: macos-15
+    env:
+      TAP_REPO_TOKEN: ${{ secrets.TAP_REPO_TOKEN }}
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve latest upstream release
+        id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh api repos/ejbills/DockDoor/releases/latest --jq .tag_name)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${tag}-patched" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if patched release exists
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${{ steps.latest.outputs.release_tag }}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout upstream tag
+        if: steps.existing.outputs.exists == 'false'
+        run: |
+          cp .github/patches/no-mouse-moving.patch "$RUNNER_TEMP/no-mouse-moving.patch"
+          git remote add upstream https://github.com/ejbills/DockDoor.git
+          git fetch --tags upstream
+          git checkout "${{ steps.latest.outputs.tag }}"
+          git apply "$RUNNER_TEMP/no-mouse-moving.patch"
+
+      - name: Build app
+        if: steps.existing.outputs.exists == 'false'
+        run: |
+          xcodebuild \
+            -project DockDoor.xcodeproj \
+            -scheme DockDoor \
+            -configuration Release \
+            -derivedDataPath DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Package DMG
+        if: steps.existing.outputs.exists == 'false'
+        run: |
+          mkdir -p dist
+          hdiutil create \
+            -volname DockDoor \
+            -srcfolder DerivedData/Build/Products/Release/DockDoor.app \
+            -ov \
+            -format UDZO \
+            dist/DockDoor-patched.dmg
+          shasum -a 256 dist/DockDoor-patched.dmg | tee dist/sha256.txt
+
+      - name: Publish patched release
+        if: steps.existing.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="Patched DockDoor ${{ steps.latest.outputs.tag }}. Mouse cursor warp/nudge code removed. Built unsigned from upstream release source."
+          gh release create "${{ steps.latest.outputs.release_tag }}" \
+            dist/DockDoor-patched.dmg \
+            dist/sha256.txt \
+            --repo "${{ github.repository }}" \
+            --title "DockDoor ${{ steps.latest.outputs.tag }} patched" \
+            --notes "$notes"
+
+      - name: Update Homebrew tap
+        if: steps.existing.outputs.exists == 'false' && env.TAP_REPO_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ env.TAP_REPO_TOKEN }}
+        run: |
+          sha=$(cut -d' ' -f1 dist/sha256.txt)
+          tmp=$(mktemp -d)
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/egigoka/homebrew-casks-patched.git" "$tmp/tap"
+          cd "$tmp/tap"
+          TAG="${{ steps.latest.outputs.release_tag }}" SHA="$sha" ruby -e 'path="Casks/dockdoor-patched.rb"; tag=ENV.fetch("TAG"); sha=ENV.fetch("SHA"); s=File.read(path); s=s.gsub(/version ".*"/, "version \"#{tag}\""); s=s.gsub(/sha256 ".*"/, "sha256 \"#{sha}\""); File.write(path, s)'
+          git add Casks/dockdoor-patched.rb
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -m "Update DockDoor patched to ${{ steps.latest.outputs.release_tag }}"
+          git push

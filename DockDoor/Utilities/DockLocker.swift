@@ -214,9 +214,6 @@ final class DockLocker {
 
     init() {
         refreshTriggerZones()
-        if !cachedTriggerZones.isEmpty {
-            setupEventTap()
-        }
         observeScreenChanges()
     }
 
@@ -230,9 +227,6 @@ final class DockLocker {
     func reset() {
         removeEventTap()
         refreshTriggerZones()
-        if !cachedTriggerZones.isEmpty {
-            setupEventTap()
-        }
     }
 
     // MARK: - Event Tap
@@ -284,28 +278,6 @@ final class DockLocker {
         if let passthrough = reEnableIfNeeded(tap: eventTap, type: type, event: event) {
             return passthrough
         }
-
-        let modifier = DockLockModifier(rawValue: Defaults[.dockLockOverrideModifier]) ?? .option
-        // mouseMoved events don't reliably carry held modifier flags, so also query live keyboard state.
-        let activeFlags = event.flags.union(CGEventSource.flagsState(.combinedSessionState))
-        if activeFlags.contains(modifier.cgEventFlag) {
-            return Unmanaged.passUnretained(event)
-        }
-
-        let cursorPos = event.location
-
-        for zone in cachedTriggerZones {
-            if zone.rect.contains(cursorPos) {
-                // Modify in-place; CGWarpMouseCursorPosition would re-enter the callback
-                let nudgedPos = CGPoint(
-                    x: cursorPos.x + zone.nudgeVector.dx,
-                    y: cursorPos.y + zone.nudgeVector.dy
-                )
-                event.location = nudgedPos
-                return Unmanaged.passUnretained(event)
-            }
-        }
-
         return Unmanaged.passUnretained(event)
     }
 
@@ -363,10 +335,6 @@ final class DockLocker {
         }
 
         refreshTriggerZones()
-        if cachedTriggerZones.isEmpty {
-            removeEventTap()
-        } else if eventTap == nil {
-            setupEventTap()
-        }
+        removeEventTap()
     }
 }

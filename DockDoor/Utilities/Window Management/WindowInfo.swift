@@ -471,27 +471,7 @@ extension WindowInfo {
         print("Failed to bring window to front after \(maxRetries) attempts")
     }
 
-    func warpMouseToCenterIfNeeded() {
-        let mode = Defaults[.mouseFollowsFocusMode]
-        guard mode != .never else { return }
-
-        guard let position = try? axElement.position(), let size = try? axElement.size(),
-              size.width > 0, size.height > 0
-        else { return }
-        let windowCenter = CGPoint(x: position.x + size.width / 2, y: position.y + size.height / 2)
-
-        if mode == .differentDisplayOnly {
-            let mousePosition = DockObserver.getMousePosition()
-            let mouseScreen = NSScreen.screenFromQuartzPoint(mousePosition)
-            let windowScreen = NSScreen.screenFromQuartzPoint(windowCenter)
-            if mouseScreen == windowScreen {
-                return
-            }
-        }
-
-        CGWarpMouseCursorPosition(windowCenter)
-        CGAssociateMouseAndMouseCursorPosition(1)
-    }
+    func warpMouseToCenterIfNeeded() {}
 
     @discardableResult
     func close() -> WindowCloseResult {
