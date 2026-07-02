@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   rebuild:
-    runs-on: macos-latest
+    runs-on: macos-26
     env:
       TAP_REPO_TOKEN: ${{ secrets.TAP_REPO_TOKEN }}
     steps:
